@@ -155,7 +155,6 @@ type AppendEntriesReply struct {
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	success := false
 	rf.mux.Lock()
-	reply.Term = rf.currentTerm
 	// term check
 	//fmt.Println("AppendEntries", args.LeaderId, "to ", rf.me, ": args term", args.Term, "current term", rf.currentTerm)
 
@@ -169,12 +168,11 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		success = true // for checkpoint, just set success to true
 		rf.leaderId = args.LeaderId
 		rf.transitToFollower()
-		if rf.debug && (!rf.isLeader) && (!rf.isFollower) {
-			fmt.Printf("leader %d makes candidate %d transits to follower\n", args.LeaderId,rf.me)
-		}
+
 		// todo: process RPC
 	}
 	//fmt.Println("serve ", rf.me, "reply ", success)
+	reply.Term = rf.currentTerm
 	rf.mux.Unlock()
 	reply.Success = success
 
@@ -203,9 +201,6 @@ func (rf *Raft) sendAppendEntries(peer int, args *AppendEntriesArgs, reply *Appe
 					rf.votedFor = -1
 
 					rf.transitToFollower()
-					if rf.debug {
-						fmt.Printf("%d makes %d transits to follower\n", peer,rf.me)
-					}
 
 				} else {
 					// todo: consider log doesn't match
@@ -257,7 +252,6 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		}
 	}
 	reply.Term = rf.currentTerm
-	//fmt.Println("server ", rf.me, "vote ", voteGranted)
 	rf.mux.Unlock()
 
 	reply.VoteGranted = voteGranted
@@ -321,11 +315,11 @@ func (rf *Raft) sendRequestVote(peer int, args *RequestVoteArgs, reply *RequestV
 	// if it's still candidate
 	if (!rf.isLeader) && (!rf.isFollower) {
 		if ok {
-			// decode reply message, check for valid votes for this term:todo, correct?
+			// decode reply message, check for valid votes for this term
 			if reply.VoteGranted && (rf.currentTerm == reply.Term) {
 				rf.numVotes++
 				if rf.debug {
-					fmt.Printf("candidate %d have %d votes\n",rf.me, rf.numVotes)
+					fmt.Printf("candidate %d have %d votes\n", rf.me, rf.numVotes)
 				}
 				if 2*rf.numVotes > len(rf.peers) {
 					rf.transitToLeader()
@@ -336,14 +330,12 @@ func (rf *Raft) sendRequestVote(peer int, args *RequestVoteArgs, reply *RequestV
 				rf.votedFor = -1
 				rf.transitToFollower()
 				if rf.debug {
-					fmt.Printf("candidate %d transits to follower\n",rf.me)
+					fmt.Printf("candidate %d transits to follower\n", rf.me)
 				}
 			}
-		} // todo: question? do we need to retry requestvoterpc?
-		//else {
-		//	// retry
-		//	go rf.sendRequestVote(peer, args, reply)
-		//}
+		}
+		// todo: question? do we need to retry requestvoterpc?
+
 	}
 	rf.mux.Unlock()
 	return ok
@@ -380,7 +372,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	if isLeader {
 		//start agreement
 		rf.logEntries = append(rf.logEntries, LogEntry{rf.currentTerm, command})
-		index = len(rf.logEntries)
+		index = len(rf.logEntries) - 1
 		term = rf.currentTerm
 
 		// todo: issue appendEntries to other servers in parallel
@@ -446,7 +438,7 @@ func Make(peers []*rpc.ClientEnd, me int, applyCh chan ApplyMsg) *Raft {
 		isFollower:         true,
 		leaderId:           -1,
 		votedFor:           -1,
-		logEntries:         make([]LogEntry, 1), // make life easier
+		logEntries:         make([]LogEntry, 1), // access log entry by logEntries[logIndex]
 		stopElectionTimer:  make(chan bool, 1),
 		stopHeartbeatTimer: make(chan bool, 1),
 		resetElectionTimer: make(chan bool, 1),
@@ -461,14 +453,23 @@ func Make(peers []*rpc.ClientEnd, me int, applyCh chan ApplyMsg) *Raft {
 	return rf
 }
 
+//func (rf * Raft) mainRountine() {
+//	for {
+//		select {
+//		case <-
+//		}
+//	}
+//}
+
 // only runs for follower and candidate
 // randomize election time between 200-400ms
 func (rf *Raft) electionTimer() {
-	t := time.NewTimer(time.Duration(rand.Intn(150)+200) * time.Millisecond)
+	t := time.NewTimer(time.Duration(rand.Intn(250)+250) * time.Millisecond)
 	for {
 		select {
 		case <-t.C:
 			// handle election
+			// try
 			rf.mux.Lock()
 			rf.startElection()
 			rf.mux.Unlock()
@@ -476,16 +477,16 @@ func (rf *Raft) electionTimer() {
 		case <-rf.stopElectionTimer:
 			return
 
-		//case <-rf.resetElectionTimer:
+			//case <-rf.resetElectionTimer:
 			//t.Reset(time.Duration(rand.Intn(200)+200) * time.Millisecond)
 			//fmt.Println("server",rf.me, "reset election timer")
 		}
-		t.Reset(time.Duration(rand.Intn(150)+200) * time.Millisecond)
+		t.Reset(time.Duration(rand.Intn(250)+250) * time.Millisecond)
 	}
 }
 
 func (rf *Raft) heartbeatTimer() {
-	t := time.NewTimer(time.Duration(100) * time.Millisecond)
+	t := time.NewTimer(time.Duration(120) * time.Millisecond)
 	for {
 		select {
 		case <-t.C:
@@ -498,17 +499,17 @@ func (rf *Raft) heartbeatTimer() {
 			return
 
 		}
-		t.Reset(time.Duration(100) * time.Millisecond)
+		t.Reset(time.Duration(120) * time.Millisecond)
 	}
 }
 
 func (rf *Raft) startElection() {
-
+	//rf.mux.Lock()
 	rf.isFollower = false
 	rf.isLeader = false
 	rf.currentTerm++
 	if rf.debug {
-		fmt.Println("server ", rf.me, "start election with term", rf.currentTerm)
+		fmt.Println("candidate ", rf.me, "start election with term", rf.currentTerm)
 	}
 	// vote for itself
 	rf.votedFor = rf.me
@@ -521,27 +522,32 @@ func (rf *Raft) startElection() {
 		LastLogIndex: len(rf.logEntries) - 1,
 		LastLogTerm:  rf.logEntries[len(rf.logEntries)-1].term,
 	}
+
 	for i := 0; i < len(rf.peers); i++ {
 		if i != rf.me {
 			go rf.sendRequestVote(i, args, &RequestVoteReply{})
 		}
 	}
+	//rf.mux.Unlock()
 }
 
 // require lock beforehead
 func (rf *Raft) spreadHeartbeat() {
+	//rf.mux.Lock()
 	args := &AppendEntriesArgs{
 		Term:         rf.currentTerm,
 		LeaderId:     rf.me,
 		PrevLogIndex: len(rf.logEntries) - 1,
 		PrevLogTerm:  rf.logEntries[len(rf.logEntries)-1].term,
 	}
+	//rf.mux.Unlock()
 	// issue heartbeat to other peers in parallel
 	for i := 0; i < len(rf.peers); i++ {
 		if i != rf.me {
 			go rf.sendAppendEntries(i, args, &AppendEntriesReply{})
 		}
 	}
+	//rf.mux.Unlock()
 }
 
 // require lock before calling it
