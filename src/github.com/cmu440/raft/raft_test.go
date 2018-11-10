@@ -1,6 +1,8 @@
 package raft
 
-import "github.com/cmu440/rpc"
+import (
+	"github.com/cmu440/rpc"
+)
 import "log"
 import "sync"
 import "testing"
@@ -45,11 +47,12 @@ func TestReElection2A(t *testing.T) {
 	defer cfg.cleanup()
 
 	fmt.Printf("Test (2A): Re-election\n")
-	fmt.Printf("Basic 1 leader\n")
+	fmt.Printf("Basic 31 leader\n")
+
 	leader1 := cfg.checkOneLeader()
 
 	// if the leader disconnects, a new one should be elected.
-	fmt.Printf("Disconnecting leader\n")
+	fmt.Printf("Disconnecting leader %d\n", leader1)
 	cfg.disconnect(leader1)
 
 	// a new leader should be elected
@@ -58,6 +61,42 @@ func TestReElection2A(t *testing.T) {
 
 	fmt.Printf("======================= END =======================\n\n")
 }
+
+//func TestMultiplt2A(t *testing.T) {
+//	fmt.Printf("==================== 7 SERVERS ====================\n")
+//	servers := 15
+//	cfg := make_config(t, servers, false)
+//	defer cfg.cleanup()
+//
+//	fmt.Printf("Test (2A): Re-election\n")
+//	j := 0
+//	for i := 0; i < 8; i++ {
+//		leader1 := cfg.checkOneLeader()
+//
+//		// if the leader disconnects, a new one should be elected.
+//		fmt.Printf("Disconnecting leader %d\n", leader1)
+//		cfg.disconnect(leader1)
+//		j++
+//
+//		// a new leader should be elected
+//		//if i%2 == 1 {
+//		//	//fmt.Println("restart", leader1)
+//		//	//cfg.start1(leader1)
+//		//	j--
+//		//}
+//		if i < 7 {
+//			if i%2 == 1 {
+//				fmt.Printf("Checking for a new leader, %d servers\n", 7-j)
+//				cfg.checkOneLeader()
+//			}
+//		} else {
+//			cfg.checkNoLeader()
+//		}
+//
+//	}
+//
+//	fmt.Printf("======================= END =======================\n\n")
+//}
 
 func TestBasicAgree2B(t *testing.T) {
 	fmt.Printf("==================== 5 SERVERS ====================\n")
@@ -274,6 +313,76 @@ loop:
 	if !success {
 		t.Fatalf("Term changed too often")
 	}
+
+	fmt.Printf("======================= END =======================\n\n")
+}
+
+func TestRejoin2B(t *testing.T) {
+	fmt.Printf("==================== 5 SERVERS ====================\n")
+	servers := 5
+	cfg := make_config(t, servers, false)
+	defer cfg.cleanup()
+
+	fmt.Printf("Test (2B): Rejoin\n")
+
+	fmt.Printf("Checking agreement\n")
+	cfg.one(10, servers)
+
+	// 3 of 5 followers disconnect
+	leader := cfg.checkOneLeader()
+	cfg.disconnect((leader + 1) % servers)
+	cfg.disconnect((leader + 2) % servers)
+	cfg.disconnect((leader + 3) % servers)
+
+	fmt.Printf("Disconnected 3 out of 5 peers\n")
+	fmt.Println("Send many commands, shouldn't commit")
+	for i := 0; i < 5; i++ {
+
+		index, _, ok := cfg.rafts[leader].Start(20)
+		if !ok {
+			t.Fatalf("Leader rejected Start()")
+		}
+		time.Sleep(2 * RaftElectionTimeout)
+
+		n, _ := cfg.nCommitted(index)
+		if n > 0 {
+			t.Fatalf("%v committed but no majority", n)
+		}
+		if index != 2+i {
+			t.Fatalf("Unexpected index %v", index)
+		}
+	}
+	fmt.Println("Disconnected leader and 1 server ")
+	cfg.disconnect(leader)
+	cfg.disconnect((leader + 4) % servers)
+
+	// repair
+	cfg.connect((leader + 1) % servers)
+	cfg.connect((leader + 2) % servers)
+	cfg.connect((leader + 3) % servers)
+
+	fmt.Printf("Reconnected all peers\n")
+
+	// the disconnected majority may have chosen a leader from
+	// among their own ranks, forgetting index 2.
+	// or perhaps
+	leader2 := cfg.checkOneLeader()
+	fmt.Println("Send many commands, should commit")
+	for i := 0; i < 5; i++ {
+		_, _, ok2 := cfg.rafts[leader2].Start(i + 30)
+		if !ok2 {
+			t.Fatalf("Leader2 rejected Start()")
+		}
+		//if index2 < 6+i || index2 > 7+i {
+		//	t.Fatalf("Unexpected index %v", index2)
+		//}
+	}
+	cfg.connect((leader + 4) % servers)
+	cfg.connect(leader)
+	fmt.Println("Reconnect old leader and follower")
+
+	fmt.Printf("Checking agreement\n")
+	cfg.one(1000, servers)
 
 	fmt.Printf("======================= END =======================\n\n")
 }
@@ -650,6 +759,8 @@ func (cfg *config) one(cmd int, expectedServers int) int {
 		if index != -1 {
 			// somebody claimed to be the leader and to have
 			// submitted our command; wait a while for agreement.
+			// debug
+			fmt.Printf("In cfg.one, expected server: %d\n", expectedServers)
 			t1 := time.Now()
 			for time.Since(t1).Seconds() < 2 {
 				nd, cmd1 := cfg.nCommitted(index)
